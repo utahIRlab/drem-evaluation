@@ -99,7 +99,7 @@ bash exp_pipeline.sh
             1. “product_scores”: output ranking results and ranking scores; 
             2. “output_embedding": output embedding representations for users, items and words.
             3. “explain": start interactive explanation mode. Specify product, user, and query id to find the nearest neighbors of each entity in different entity space. Read interactive_explain_mode() in ./ProductSearch/main.py for more information.
-	    4. "explanation_path": generate explanation paths for all user-query-product pairs in the test batch. 
+		4. "explanation_path": generate explanation paths for all user-query-product pairs in the test batch. 
         21. rank_cutoff: Rank cutoff for output rank lists. Default 100.
 	22. explanation_output_file: Output csv file path for generated explanations. Provide only when test_mode is explanation_path.
     2. Evaluation
