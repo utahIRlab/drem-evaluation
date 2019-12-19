@@ -99,9 +99,9 @@ bash exp_pipeline.sh
             1. “product_scores”: output ranking results and ranking scores; 
             2. “output_embedding": output embedding representations for users, items and words.
             3. “explain": start interactive explanation mode. Specify product, user, and query id to find the nearest neighbors of each entity in different entity space. Read interactive_explain_mode() in ./ProductSearch/main.py for more information.
-		4. "explanation_path": generate explanation paths for all user-query-product pairs in the test batch. 
+            4. "explanation_path": generate explanation paths for all user-query-product pairs in the test batch. 
         21. rank_cutoff: Rank cutoff for output rank lists. Default 100.
-	22. explanation_output_file: Output csv file path for generated explanations. Provide only when test_mode is explanation_path.
+        22. explanation_output_file: Output csv file path for generated explanations. Provide only when test_mode is explanation_path.
     2. Evaluation
         1. After training with "--decode False”, generate test rank lists with "--decode True”.
         2. TREC format rank lists for test data will be stored in <train_dir> with name “test.<similarity_func>.ranklist”
@@ -124,3 +124,20 @@ bash exp_pipeline.sh
 | window\_size  | 3 | 3 | 3 | 3 |
 | similarity\_func | bias\_product | bias\_product | bias\_product | bias\_product |
 
+### Generating data for Mturk survey
+Run the model with test mode as "explanation_path" to obtain explanations for all user-query-review pairs from the dataset.
+The generated explanations can be found in the output csv file path that you provided while running the model.
+This CSV file contains the following fields: user, query, product, explanation, previous_reviews.
+
+This CSV file should be provided as input to web_scrapper.py to scrape product title, image and description.
+The web scrapper generates a CSV file with following fields: user, query, product, explanation, previous_reviews, title, image, description.
+This output file is present as utils/mturk-batch-input.csv. 
+
+**Scrapper usage:**
+```
+python utils/web_scapper.py "your input file name"
+```
+
+The generated mturk-batch-input.csv file is to be uploaded to Amazon MTurk as a batch input file. The setup for MTurk survey is present in [this documentation][mturk-setup-doc].
+
+[mturk-setup-doc]: Setting%20up%20Mturk%20survey.pdf

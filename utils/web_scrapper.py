@@ -4,6 +4,7 @@ import urllib.error
 from bs4 import BeautifulSoup
 import ssl
 import csv
+import sys
 
 
 def scrape(url):
@@ -63,7 +64,8 @@ def scrape(url):
 
 if __name__ == "__main__":
 	instances = []
-	with open('explanation-output.csv') as csv_file:
+	input_csv_path = sys.argv[1]
+	with open(input_csv_path) as csv_file:
 		reader = csv.DictReader(csv_file)
 		for row in reader:
 			instances.append(row)
