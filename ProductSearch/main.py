@@ -59,10 +59,8 @@ tf.app.flags.DEFINE_boolean("decode", False,
 tf.app.flags.DEFINE_string("test_mode", "product_scores", "Test modes: product_scores -> output ranking results and ranking scores; output_embedding -> output embedding representations for users, items and words. (default is product_scores)")
 tf.app.flags.DEFINE_integer("rank_cutoff", 100,
 							"Rank cutoff for output ranklists.")
-
-tf.app.flags.DEFINE_string("explanation_output_file", "./utils/explanation-output.csv",
-							"Output CSV file where generated explanations will be written")
-
+tf.app.flags.DEFINE_string("explanation_output_dir", "./utils/",
+							"Output CSV dir where generated explanations will be written")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -307,7 +305,6 @@ def find_explanation_path():
 		# Create model.
 		print("Read model")
 		model = create_model(sess, True, data_set, data_set.train_review_size)
-		print('Start Interactive Process')
 		words_to_train = float(FLAGS.max_train_epoch * data_set.word_count) + 1
 		test_seq = [i for i in xrange(data_set.review_size)]
 		model.setup_data_set(data_set, words_to_train)
@@ -316,14 +313,15 @@ def find_explanation_path():
 		input_feed, has_next, uqr_pairs = model.get_test_batch()
 
 		test_feed = copy.deepcopy(input_feed)
+		print('Generating explanations')
 
 
-		with open(FLAGS.explanation_output_file, mode='w') as write_csv_file:
+		with open(FLAGS.explanation_output_dir + 'explanation-output.csv', mode='w') as write_csv_file:
 			csv_writer = csv.writer(write_csv_file, delimiter=',')
-			csv_writer.writerow(['user','query','product','explanation', 'previous_reviews'])
-
+			csv_writer.writerow(['sample_id','user','query','product','explanation', 'previous_reviews'])
+			count = 0
 			for (user_idx, product_idx, query_idx, review_idx) in uqr_pairs:
-
+				sample_id = '-'.join([str(user_idx), str(product_idx), str(query_idx), str(review_idx)])
 				test_feed[model.user_idxs.name] = [user_idx]
 				test_feed[model.product_idxs.name] = [product_idx]
 				query_word_idx = model.data_set.query_words[query_idx]
@@ -337,32 +335,41 @@ def find_explanation_path():
 				review_word_idxs = [data_set.review_text[idx] for idx in review_idxs]
 				reviews = []
 				for idx, review_word_idx in enumerate(review_word_idxs):
+					if idx >= 5 :
+						break
 					review_txt = ' '.join([data_set.words[idx] for idx in review_word_idx if idx < len(data_set.words)])
 					reviews.append(str(idx+1) + ') ' + review_txt)
 
-				print('User %d %s' % (user_idx, user))
-				print('Product %d %s' % (product_idx, product))
-				overall_max = (None, None, -1, float('-inf'))
+				#merge all entity scores into one list to get max 3 values
+				overall_tuple_list = []
 				for relation_name, entity_name, entity_scores in up_entity_list:
 					entity_scores = entity_scores[0]
-					curr_max_val_index, curr_max_value = max(enumerate(entity_scores), key=operator.itemgetter(1))
-					if curr_max_value > overall_max[3]:
-						overall_max = (relation_name, entity_name, curr_max_val_index, curr_max_value)
+					indexed_scores = list(enumerate(entity_scores))
+					curr_tuple_list = [(relation_name, entity_name, index, value) for index, value in indexed_scores]
+					overall_tuple_list.extend(curr_tuple_list)
 
-				print(overall_max)
-				relation_name, entity_name, max_index, _ = overall_max
-				word = data_set.entity_vocab[entity_name][max_index]
-				explanation = ""
-				if relation_name == 'write':
-					explanation = EXPLANATION_TMPL_WRITE.format(user=user, product= product, word=word)
-				elif relation_name == 'brand':
-					explanation = EXPLANATION_TMPL_BRAND.format(user=user, product=product, word=word)
-				elif relation_name == 'categories':
-					explanation = EXPLANATION_TMPL_CATEGORY.format(user=user, product=product, word=word)
-				else:
-					explanation = EXPLANATION_TMPL_RELATED.format(user=user, product=product, word=word)
+				#get top 3 values and generate explanation for them
+				top_valued_tuples = sorted(overall_tuple_list, key=operator.itemgetter(3), reverse=True)[:3]
+				explanation = ''
 
-				csv_writer.writerow([user, query, product, explanation, '\n'.join(reviews)])
+				for index, top_tuple in enumerate(top_valued_tuples):
+					relation_name, entity_name, max_index, _ = top_tuple
+					word = data_set.entity_vocab[entity_name][max_index]
+					if relation_name == 'write':
+						curr_explanation = EXPLANATION_TMPL_WRITE.format(user=user, product= product, word=word)
+					elif relation_name == 'brand':
+						curr_explanation = EXPLANATION_TMPL_BRAND.format(user=user, product=product, word=word)
+					elif relation_name == 'categories':
+						curr_explanation = EXPLANATION_TMPL_CATEGORY.format(user=user, product=product, word=word)
+					else:
+						curr_explanation = EXPLANATION_TMPL_RELATED.format(user=user, product=product, word=word)
+
+					explanation += str(index+1) + '. ' + curr_explanation + '\n'
+
+				csv_writer.writerow([sample_id, user, query, product, explanation, '\n'.join(reviews)])
+				count += 1
+
+			print("Generated " + str(count) + " explanations")
 
 
 def main(_):
