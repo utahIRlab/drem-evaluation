@@ -34,6 +34,27 @@ class Tensorflow_data:
 		for i in range(len(self.query_words)):
 			self.query_words[i] = [self.vocab_size for j in range(self.query_max_length-len(self.query_words[i]))] + self.query_words[i]
 
+		# get flags of whether a review is in the training data
+		self.is_train_review = [False for _ in range(len(self.review_id_to_idx))]
+		with gzip.open(input_train_dir + 'train_id.txt.gz', 'rt') as fin:
+			for line in fin:
+				arr = line.strip().split('\t')
+				original_review_idx = self.review_id_to_idx[arr[2]]
+				self.is_train_review[original_review_idx] = True
+
+		self.user_history_idxs = {
+			'review': [],
+		}
+		# get the user history review and user product set
+		with gzip.open(data_path + "u_r_seq.txt.gz", 'rt') as fin:
+			for line in fin:
+				review_ids = line.rstrip().split(" ")
+				reviews = [int(review_id_str) for review_id_str in review_ids if str.isnumeric(review_id_str)]
+				train_reviews = []
+				for review_idx in reviews:
+					if self.is_train_review[review_idx]:
+						train_reviews.append(review_idx)
+				self.user_history_idxs['review'].append(train_reviews)
 
 		#get review sets
 		self.word_count = 0

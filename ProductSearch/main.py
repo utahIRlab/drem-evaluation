@@ -59,6 +59,8 @@ tf.app.flags.DEFINE_boolean("decode", False,
 tf.app.flags.DEFINE_string("test_mode", "product_scores", "Test modes: product_scores -> output ranking results and ranking scores; output_embedding -> output embedding representations for users, items and words. (default is product_scores)")
 tf.app.flags.DEFINE_integer("rank_cutoff", 100,
 							"Rank cutoff for output ranklists.")
+tf.app.flags.DEFINE_string("sample_file_for_explanation", "./utils/",
+							"A file of sampled queries and corresponding items (query_id\titem_name) for which to generate explanation.")
 tf.app.flags.DEFINE_string("explanation_output_dir", "./utils/",
 							"Output CSV dir where generated explanations will be written")
 
@@ -371,6 +373,104 @@ def find_explanation_path():
 
 			print("Generated " + str(count) + " explanations")
 
+def find_explanation_path_for_samples():
+	print("Reading data in %s" % FLAGS.data_dir)
+
+	data_set = data_util.Tensorflow_data(FLAGS.data_dir, FLAGS.input_train_dir, 'test')
+	data_set.read_train_product_ids(FLAGS.input_train_dir)
+	config = tf.ConfigProto()
+	config.gpu_options.allow_growth = True
+
+	# Read sample user-query-item triples for explanations
+	print('Read user-query-item triples for explanations')
+	sampled_uqi_triples = None
+	if os.path.isfile(FLAGS.sample_file_for_explanation):
+		with open(FLAGS.sample_file_for_explanation) as fin:
+			sampled_uqi_triples = set()
+			for line in fin:
+				arr = line.split()
+				product_id = data_set.get_idx(arr[1], 'product') 
+				arr2 = arr[0].split('_')
+				user_id = data_set.get_idx(arr2[0], 'user') 
+				query_id = int(arr2[1])
+				sampled_uqi_triples.add(user_id, query_id, product_id)
+			if len(sampled_uqi_triples) < 1:
+				sampled_uqi_triples = None
+
+	with tf.Session(config=config) as sess, open(FLAGS.explanation_output_dir + 'explanation-output.csv', mode='w') as write_csv_file:
+		# Create model.
+		print("Read model")
+		model = create_model(sess, True, data_set, data_set.train_review_size)
+		words_to_train = float(FLAGS.max_train_epoch * data_set.word_count) + 1
+		test_seq = [i for i in xrange(data_set.review_size)]
+		model.setup_data_set(data_set, words_to_train)
+		model.intialize_epoch(test_seq)
+		model.prepare_test_epoch(sampled_uqi_triples=sampled_uqi_triples)
+		has_next = True
+
+		print('Generating explanations')
+		csv_writer = csv.writer(write_csv_file, delimiter=',')
+		csv_writer.writerow(['sample_id', 'user', 'query', 'product', 'explanation', 'attention_weight', 'previous_reviews'])
+		count = 0
+
+		while has_next:
+			# get inputs
+			input_feed, has_next, uqr_pairs = model.get_test_batch()
+			# Compute scores
+			up_entity_list, _ = model.step(sess, input_feed, True, 'explain_user_product')
+
+			# Create explanations
+			for i in range(len(uqr_pairs)):
+				user_idx, product_idx, query_idx, review_idx = uqr_pairs[i]
+				sample_id = '-'.join([str(user_idx), str(product_idx), str(query_idx), str(review_idx)])
+				query_word_idx = model.data_set.query_words[query_idx]
+				user = data_set.user_ids[user_idx]
+				product = data_set.product_ids[product_idx]
+				query = ' '.join([data_set.words[x] for x in query_word_idx if x < len(data_set.words)])
+
+				# Get 10 most recent reviews
+				review_idxs = data_set.user_history_idxs['review'][user_idx]
+				sampled_review_count = 0
+				reviews = []
+				for review_id in reversed(review_idxs):
+					review_word_idxs = data_set.review_text[review_id]
+					review_txt = ' '.join([data_set.words[idx] for idx in review_word_idxs if idx < len(data_set.words)])
+					sampled_review_count += 1
+					reviews.append(str(sampled_review_count) + ') ' + review_txt)
+					if sampled_review_count >= 10:
+						break
+
+				#merge all entity scores into one list to get max 3 values
+				overall_tuple_list = []
+				for relation_name, entity_name, batch_entity_scores in up_entity_list:
+					entity_scores = batch_entity_scores[i]
+					indexed_scores = list(enumerate(entity_scores))
+					curr_tuple_list = [(relation_name, entity_name, index, value) for index, value in indexed_scores]
+					overall_tuple_list.extend(curr_tuple_list)
+
+				#get top 3 values and generate explanation for them
+				top_valued_tuples = sorted(overall_tuple_list, key=operator.itemgetter(3), reverse=True)[:3]
+				explanation = ''
+
+				for index, top_tuple in enumerate(top_valued_tuples):
+					relation_name, entity_name, max_index, _ = top_tuple
+					word = data_set.entity_vocab[entity_name][max_index]
+					if relation_name == 'write':
+						curr_explanation = EXPLANATION_TMPL_WRITE.format(user=user, product= product, word=word)
+					elif relation_name == 'brand':
+						curr_explanation = EXPLANATION_TMPL_BRAND.format(user=user, product=product, word=word)
+					elif relation_name == 'categories':
+						curr_explanation = EXPLANATION_TMPL_CATEGORY.format(user=user, product=product, word=word)
+					else:
+						curr_explanation = EXPLANATION_TMPL_RELATED.format(user=user, product=product, word=word)
+
+					explanation += str(index+1) + '. ' + curr_explanation + '\n'
+
+				csv_writer.writerow([sample_id, user, query, product, explanation, '\n'.join(reviews)])
+				count += 1
+
+		print("Generated " + str(count) + " explanations")
+
 
 def main(_):
 	if FLAGS.input_train_dir == "":
@@ -382,7 +482,7 @@ def main(_):
 		elif 'explain' in FLAGS.test_mode:
 			interactive_explain_mode()
 		elif FLAGS.test_mode == 'explanation_path':
-			find_explanation_path()
+			find_explanation_path_for_samples()
 		else:
 			get_product_scores()
 	else:
