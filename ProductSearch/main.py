@@ -59,6 +59,10 @@ tf.app.flags.DEFINE_boolean("decode", False,
 tf.app.flags.DEFINE_string("test_mode", "product_scores", "Test modes: product_scores -> output ranking results and ranking scores; output_embedding -> output embedding representations for users, items and words. (default is product_scores)")
 tf.app.flags.DEFINE_integer("rank_cutoff", 100,
 							"Rank cutoff for output ranklists.")
+tf.app.flags.DEFINE_integer("explanation_previous_review_num", 10,
+							"How many previous reviews to show for each user in explanation evaluation.")
+tf.app.flags.DEFINE_integer("explanation_candidate_num", 3,
+							"How many explanation candidates to show for each item in explanation evaluation.")
 tf.app.flags.DEFINE_string("sample_file_for_explanation", "./utils/",
 							"A file of sampled queries and corresponding items (query_id\titem_name) for which to generate explanation.")
 tf.app.flags.DEFINE_string("explanation_output_dir", "./utils/",
@@ -66,10 +70,11 @@ tf.app.flags.DEFINE_string("explanation_output_dir", "./utils/",
 
 FLAGS = tf.app.flags.FLAGS
 
-EXPLANATION_TMPL_WRITE = "This product was retrieved because the user often writes about '{word}' in reviews which is used frequently to describe '{product}' by other users"
-EXPLANATION_TMPL_BRAND = "This product was retrieved because the user often buys products of brand '{word}' and '{product}' is also associated with brand '{word}'"
-EXPLANATION_TMPL_CATEGORY = "This product was retrieved because the user often buys products in category '{word}' and '{product}' is also associated with category '{word}'"
-EXPLANATION_TMPL_RELATED = "This product was retrieved because the user bought a related product '{word}' and '{product}' is also associated with this related product '{word}'"
+EXPLANATION_TMPL_WRITE = "This product was retrieved because the user often writes about {word} in reviews which is used frequently to describe this product by other users."
+EXPLANATION_TMPL_BRAND = "This product was retrieved because the user often buys products with brands such as {word}, and this product is often associated with those brands."
+EXPLANATION_TMPL_CATEGORY = "This product was retrieved because the user often buys products in categories such as {word}, and this product is often associated with those categories."
+#EXPLANATION_TMPL_RELATED = "This product was retrieved because the user bought a related product '{word}' and '{product}' is often associated with this related product '{word}'"
+EXPLANATION_TMPL_RELATED = "This product was retrieved because of the products (such as {word}) <em>{relation_type}</em> with the previous purchass of the user, and this product is often associated with those products too."
 
 
 def create_model(session, forward_only, data_set, review_size):
@@ -357,14 +362,14 @@ def find_explanation_path():
 				for index, top_tuple in enumerate(top_valued_tuples):
 					relation_name, entity_name, max_index, _ = top_tuple
 					word = data_set.entity_vocab[entity_name][max_index]
-					if relation_name == 'write':
-						curr_explanation = EXPLANATION_TMPL_WRITE.format(user=user, product= product, word=word)
+					if relation_name == 'write' or relation_name == 'word':
+						curr_explanation = EXPLANATION_TMPL_WRITE.format(user=user, word=word)
 					elif relation_name == 'brand':
-						curr_explanation = EXPLANATION_TMPL_BRAND.format(user=user, product=product, word=word)
+						curr_explanation = EXPLANATION_TMPL_BRAND.format(user=user, word=word)
 					elif relation_name == 'categories':
-						curr_explanation = EXPLANATION_TMPL_CATEGORY.format(user=user, product=product, word=word)
+						curr_explanation = EXPLANATION_TMPL_CATEGORY.format(user=user, word=word)
 					else:
-						curr_explanation = EXPLANATION_TMPL_RELATED.format(user=user, product=product, word=word)
+						curr_explanation = EXPLANATION_TMPL_RELATED.format(user=user, word=word)
 
 					explanation += str(index+1) + '. ' + curr_explanation + '\n'
 
@@ -378,6 +383,7 @@ def find_explanation_path_for_samples():
 
 	data_set = data_util.Tensorflow_data(FLAGS.data_dir, FLAGS.input_train_dir, 'test')
 	data_set.read_train_product_ids(FLAGS.input_train_dir)
+	data_set.read_org_product_reviews(FLAGS.data_dir)
 	config = tf.ConfigProto()
 	config.gpu_options.allow_growth = True
 
@@ -393,7 +399,7 @@ def find_explanation_path_for_samples():
 				arr2 = arr[0].split('_')
 				user_id = data_set.get_idx(arr2[0], 'user') 
 				query_id = int(arr2[1])
-				sampled_uqi_triples.add(user_id, query_id, product_id)
+				sampled_uqi_triples.add((user_id, query_id, product_id))
 			if len(sampled_uqi_triples) < 1:
 				sampled_uqi_triples = None
 
@@ -410,7 +416,7 @@ def find_explanation_path_for_samples():
 
 		print('Generating explanations')
 		csv_writer = csv.writer(write_csv_file, delimiter=',')
-		csv_writer.writerow(['sample_id', 'user', 'query', 'product', 'explanation', 'attention_weight', 'previous_reviews'])
+		csv_writer.writerow(['sample_id','user','query','product','explanation', 'previous_reviews'])
 		count = 0
 
 		while has_next:
@@ -430,14 +436,18 @@ def find_explanation_path_for_samples():
 
 				# Get 10 most recent reviews
 				review_idxs = data_set.user_history_idxs['review'][user_idx]
+				product_idxs = data_set.user_history_idxs['product'][user_idx]
 				sampled_review_count = 0
 				reviews = []
-				for review_id in reversed(review_idxs):
-					review_word_idxs = data_set.review_text[review_id]
+				for k in reversed(range(len(review_idxs))):
+					review_id = review_idxs[k]
+					product_id = product_idxs[k]
+					product_name = data_set.product_ids[product_id]
+					review_word_idxs = data_set.org_review_text[review_id]
 					review_txt = ' '.join([data_set.words[idx] for idx in review_word_idxs if idx < len(data_set.words)])
 					sampled_review_count += 1
-					reviews.append(str(sampled_review_count) + ') ' + review_txt)
-					if sampled_review_count >= 10:
+					reviews.append(str(sampled_review_count) + ') <em>%s</em>: %s' % (product_name, review_txt))
+					if sampled_review_count >= FLAGS.explanation_previous_review_num:
 						break
 
 				#merge all entity scores into one list to get max 3 values
@@ -448,23 +458,39 @@ def find_explanation_path_for_samples():
 					curr_tuple_list = [(relation_name, entity_name, index, value) for index, value in indexed_scores]
 					overall_tuple_list.extend(curr_tuple_list)
 
-				#get top 3 values and generate explanation for them
-				top_valued_tuples = sorted(overall_tuple_list, key=operator.itemgetter(3), reverse=True)[:3]
+				#get top 3 relation and their values and generate explanation for them
+				top_valued_tuples = sorted(overall_tuple_list, key=operator.itemgetter(3), reverse=True)#[:FLAGS.explanation_candidate_num]
 				explanation = ''
-
+				used_relation_dict = {}
+				relation_list = []
 				for index, top_tuple in enumerate(top_valued_tuples):
 					relation_name, entity_name, max_index, _ = top_tuple
-					word = data_set.entity_vocab[entity_name][max_index]
-					if relation_name == 'write':
-						curr_explanation = EXPLANATION_TMPL_WRITE.format(user=user, product= product, word=word)
+					if relation_name not in used_relation_dict:
+						if len(relation_list) < FLAGS.explanation_candidate_num:
+							used_relation_dict[relation_name] = []
+							relation_list.append(relation_name)
+						else:
+							continue
+					if len(used_relation_dict[relation_name]) < 3:
+						word = "'<em>%s</em>'" % data_set.entity_vocab[entity_name][max_index]
+						used_relation_dict[relation_name].append(word)
+				
+				count_exp = 0
+				for relation_name in relation_list:
+					word = ', '.join(used_relation_dict[relation_name])
+					if relation_name == 'write' or relation_name == 'word':
+						curr_explanation = EXPLANATION_TMPL_WRITE.format(user=user, word=word)
 					elif relation_name == 'brand':
-						curr_explanation = EXPLANATION_TMPL_BRAND.format(user=user, product=product, word=word)
-					elif relation_name == 'categories':
-						curr_explanation = EXPLANATION_TMPL_CATEGORY.format(user=user, product=product, word=word)
+						curr_explanation = EXPLANATION_TMPL_BRAND.format(user=user, word=word)
+					elif relation_name == 'categories': 
+						curr_explanation = EXPLANATION_TMPL_CATEGORY.format(user=user, word=word)
 					else:
-						curr_explanation = EXPLANATION_TMPL_RELATED.format(user=user, product=product, word=word)
+						curr_explanation = EXPLANATION_TMPL_RELATED.format(user=user, word=word, relation_type=relation_name)
 
-					explanation += str(index+1) + '. ' + curr_explanation + '\n'
+					explanation += str(count_exp+1) + '. ' + curr_explanation + '\n'
+					count_exp += 1
+					if count_exp == FLAGS.explanation_candidate_num:
+						break
 
 				csv_writer.writerow([sample_id, user, query, product, explanation, '\n'.join(reviews)])
 				count += 1
@@ -476,7 +502,10 @@ def main(_):
 	if FLAGS.input_train_dir == "":
 		FLAGS.input_train_dir = FLAGS.data_dir
 
+	print('Testing model? %s' % (str(FLAGS.decode)))
+
 	if FLAGS.decode:
+		print('Test mode: %s' % FLAGS.test_mode)
 		if FLAGS.test_mode == 'output_embedding':
 			output_embedding()
 		elif 'explain' in FLAGS.test_mode:

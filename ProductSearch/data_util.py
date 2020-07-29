@@ -34,6 +34,14 @@ class Tensorflow_data:
 		for i in range(len(self.query_words)):
 			self.query_words[i] = [self.vocab_size for j in range(self.query_max_length-len(self.query_words[i]))] + self.query_words[i]
 
+		# Read review id
+		self.review_id_to_idx = {}
+		with gzip.open(data_path + "review_id.txt.gz", 'rt') as fin:
+			index = 0
+			for line in fin:
+				self.review_id_to_idx[line.strip()] = index
+				index += 1
+
 		# get flags of whether a review is in the training data
 		self.is_train_review = [False for _ in range(len(self.review_id_to_idx))]
 		with gzip.open(input_train_dir + 'train_id.txt.gz', 'rt') as fin:
@@ -44,6 +52,7 @@ class Tensorflow_data:
 
 		self.user_history_idxs = {
 			'review': [],
+			'product': [],
 		}
 		# get the user history review and user product set
 		with gzip.open(data_path + "u_r_seq.txt.gz", 'rt') as fin:
@@ -55,6 +64,17 @@ class Tensorflow_data:
 					if self.is_train_review[review_idx]:
 						train_reviews.append(review_idx)
 				self.user_history_idxs['review'].append(train_reviews)
+				self.user_history_idxs['product'].append([-1 for _ in range(len(self.user_history_idxs['review'][-1]))])
+		
+		# get user product idx data
+		with gzip.open(data_path + "review_u_p.txt.gz", 'rt') as fin:
+			review_idx = 0
+			for line in fin:
+				user_idx, product_idx = int(line.rstrip().split(" ")[0]), int(line.rstrip().split(" ")[1])
+				if review_idx in self.user_history_idxs['review'][user_idx]:
+					pos = self.user_history_idxs['review'][user_idx].index(review_idx)
+					self.user_history_idxs['product'][user_idx][pos] = product_idx
+				review_idx += 1
 
 		#get review sets
 		self.word_count = 0
@@ -168,6 +188,12 @@ class Tensorflow_data:
 				self.train_review_size += 1
 				arr = line.strip().split('\t')
 				self.user_train_product_set_list[int(arr[0])].add(int(arr[1]))
+	
+	def read_org_product_reviews(self, data_path):
+		self.org_review_text = []
+		with gzip.open(data_path + 'review_text.txt.gz', 'rt') as fin:
+			for line in fin:
+				self.org_review_text.append([int(i) for i in line.strip().split(' ')])
 
 
 	def compute_test_product_ranklist(self, u_idx, original_scores, sorted_product_idxs, rank_cutoff):
