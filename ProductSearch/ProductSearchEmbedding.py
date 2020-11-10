@@ -220,14 +220,14 @@ class ProductSearchEmbedding_model(object):
 
 				# project user + query to tail_entity space and calculate probability
 				_, eu_vecs = PersonalizedEmbedding.get_relation_scores(self, 0.5, uq_vec, relation_name, tail_entity)
-				eu_sum = tf.reduce_sum(tf.math.exp(tf.matmul(eu_vecs, e_vecs, transpose_b=True)))
-				prob_e_eu = tf.math.exp(tf.matmul(eu_vecs, e_vecs,transpose_b=True) - 1) / eu_sum
+				eu_sum = tf.log(tf.reduce_sum(tf.math.exp(tf.matmul(eu_vecs, e_vecs, transpose_b=True))))
+				prob_e_eu = tf.matmul(eu_vecs, e_vecs,transpose_b=True) - 1 - eu_sum
 
 				# project product to tail_entity space and calculate probability
 				_, ei_vecs = PersonalizedEmbedding.get_relation_scores(self, 0.5, p_vec, relation_name, tail_entity)
-				ei_sum = tf.reduce_sum(tf.math.exp(tf.matmul(ei_vecs, e_vecs,transpose_b=True)))
-				prob_e_ei = tf.math.exp(tf.matmul(ei_vecs, e_vecs,transpose_b=True) - 1) / ei_sum
-				scores = prob_e_eu * prob_e_ei
+				ei_sum = tf.log(tf.reduce_sum(tf.math.exp(tf.matmul(ei_vecs, e_vecs,transpose_b=True))))
+				prob_e_ei = tf.matmul(ei_vecs, e_vecs,transpose_b=True) - 1 - ei_sum
+				scores = prob_e_eu + prob_e_ei
 
 				self.up_entity_list.append((relation_name, tail_entity, scores))
 

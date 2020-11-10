@@ -53,7 +53,13 @@ class Tensorflow_data:
 		self.user_history_idxs = {
 			'review': [],
 			'product': [],
+			'brand': [],
+			'categories': [],
+			'also_bought': [],
+			'also_viewed': [],
+			'bought_together': []
 		}
+
 		# get the user history review and user product set
 		with gzip.open(data_path + "u_r_seq.txt.gz", 'rt') as fin:
 			for line in fin:
@@ -164,6 +170,40 @@ class Tensorflow_data:
 					self.knowledge[name]['data'].append(knowledge)
 			self.knowledge[name]['distribute'] = self.knowledge[name]['distribute'].tolist()
 
+		for product_idxs in self.user_history_idxs['product']:
+			brand_idxs = []
+			category_idxs = []
+			also_bought_idxs = []
+			also_viewed_idxs = []
+			bought_together_idxs = []
+
+			for product_idx in product_idxs:
+				brand_idxs.extend(self.knowledge['brand']['data'][product_idx])
+				category_idxs.extend(self.knowledge['categories']['data'][product_idx])
+				also_bought_idxs.extend(self.knowledge['also_bought']['data'][product_idx])
+				also_viewed_idxs.extend(self.knowledge['also_viewed']['data'][product_idx])
+				bought_together_idxs.extend(self.knowledge['bought_together']['data'][product_idx])
+
+			#get unique idxs
+			brand_idxs = list(set(brand_idxs))
+			category_idxs = list(set(category_idxs))
+			also_bought_idxs = list(set(also_bought_idxs))
+			also_viewed_idxs = list(set(also_viewed_idxs))
+			bought_together_idxs = list(set(bought_together_idxs))
+
+			self.history_length.append(len(product_idxs))
+			self.user_history_idxs['brand'].append(brand_idxs)
+			self.user_history_idxs['categories'].append(category_idxs)
+			self.user_history_idxs['also_bought'].append(also_bought_idxs)
+			self.user_history_idxs['also_viewed'].append(also_viewed_idxs)
+			self.user_history_idxs['bought_together'].append(bought_together_idxs)
+
+			#history length should be max of all histories
+			max_history_length = max(len(product_idxs), len(brand_idxs), len(category_idxs), len(also_bought_idxs), len(also_viewed_idxs), len(bought_together_idxs))
+			if self.max_history_length < max_history_length:
+				self.max_history_length = max_history_length
+		print('Max user history length %d' % self.max_history_length)
+		print('Average user history length %.4f' % np.mean(self.history_length))
 
 		print("Data statistic: vocab %d, review %d, user %d, product %d\n" % (self.vocab_size, 
 					self.review_size, self.user_size, self.product_size))
@@ -278,5 +318,259 @@ class Tensorflow_data:
 		except:
 			return int(input_str)
 
+	def prepare_feature_stats(self, data_path, sampled_uqi_triples):
+		self.entity_user_distributions = {key: {} for key in self.user_history_idxs}
+		self.entity_user_distributions['write'] = {
+			'distribute': np.zeros(self.vocab_size)
+		}
+		# For fidelity features
+		# compute inverted index for words -> users, products
+		with gzip.open(data_path + "review_u_p.txt.gz", 'rt') as fin:
+			index = 0
+			self.word_to_users = [set() for _ in range(self.vocab_size)]
+			self.word_to_items = [set() for _ in range(self.vocab_size)]
+			for line in fin:
+				user_idx, product_idx = int(line.rstrip().split(" ")[0]), int(line.rstrip().split(" ")[1])
+				for w in self.org_review_text[index]:
+					self.word_to_users[w].add(user_idx)
+					self.word_to_items[w].add(product_idx)
+				index = 1
+		
+		# For novelty features
+		self.entity_item_distributions = {
+			'write': {
+				'distribute':[len(x) for x in self.word_to_items]
+			}
+		}
+		self.entity_item_distributions['write']['sum'] = np.sum(self.entity_item_distributions['write']['distribute'])
+		
+		self.entity_user_distributions['write']['distribute'] = [len(x) for x in self.word_to_users]
+		self.entity_user_distributions['write']['sum'] = np.sum(self.entity_user_distributions['write']['distribute'])
+		info_entropy = 0.0
+		for x in self.entity_user_distributions['write']['distribute']:
+			p_x = (x+1)/self.entity_user_distributions['write']['sum']
+			info_entropy = info_entropy - p_x * np.log(p_x)
+		self.entity_user_distributions['write']['entropy'] = info_entropy
+
+		for key in self.user_history_idxs:
+			if key == 'review':
+				continue
+			if key == 'product':
+				self.entity_user_distributions[key]['distribute'] = np.zeros(self.product_size)
+			else:
+				self.entity_user_distributions[key]['distribute'] = np.zeros(len(self.knowledge[key]['vocab']))
+			for history_list in self.user_history_idxs[key]:
+				for idx in history_list:
+					self.entity_user_distributions[key]['distribute'][idx] += 1
+			self.entity_user_distributions[key]['sum'] = np.sum(self.entity_user_distributions[key]['distribute'])
+			# compute entropy
+			info_entropy = 0.0
+			for x in self.entity_user_distributions[key]['distribute']:
+				p_x = (x+1)/self.entity_user_distributions[key]['sum']
+				info_entropy = info_entropy - p_x * np.log(p_x)
+			self.entity_user_distributions[key]['entropy'] = info_entropy
+
+		user_product_sets = [set(x) for x in self.user_history_idxs['product']]
+		
+		# compute user-word, item-word coorcurence
+		self.word_co_map = {
+			'user' : {},
+			'item' : {},
+		}
+		for (user_idx, query_idx, product_idx) in sampled_uqi_triples:
+			if user_idx not in self.word_co_map['user']:
+				self.word_co_map['user'][user_idx] = np.zeros(self.vocab_size)
+			if product_idx not in self.word_co_map['item']:
+				self.word_co_map['item'][product_idx] = np.zeros(self.vocab_size)
+		with gzip.open(data_path + "review_u_p.txt.gz", 'rt') as fin:
+			for line in fin:
+				user_idx, product_idx = int(line.rstrip().split(" ")[0]), int(line.rstrip().split(" ")[1])
+				if user_idx in self.word_co_map['user'][user_idx]:
+					for w in self.org_review_text[index]:
+						self.word_co_map['user'][user_idx][w] += 1
+				if product_idx in self.word_co_map['item'][product_idx]:
+					for w in self.org_review_text[index]:
+						self.word_co_map['item'][product_idx][w] += 1
+
+		# compute item-entity coocurence in user history
+		self.item_entity_co_map = {}
+		for (user_idx, query_idx, product_idx) in sampled_uqi_triples:
+			if product_idx not in self.item_entity_co_map:
+				self.item_entity_co_map[product_idx] = {}
+				for key in self.user_history_idxs:
+					if key == 'review':
+						continue
+					if key == 'product':
+						self.item_entity_co_map[product_idx][key] = np.zeros(self.product_size)
+					else:
+						self.item_entity_co_map[product_idx][key] = np.zeros(len(self.knowledge[key]['vocab']))
+				for i in range(len(user_product_sets)):
+					user_purchases = user_product_sets[i]
+					if product_idx in user_purchases:
+						for key in self.user_history_idxs:
+							if key == 'review':
+								continue
+							history_list = self.user_history_idxs[key][i]
+							for idx in history_list:
+								self.item_entity_co_map[product_idx][key][idx] += 1
+
+
+
+	def get_performance_features(self, current_product_score, all_product_scores):
+		feature_names = []
+		feature_values = []
+		# log(P(i|u,q))
+		feature_names.append('log_purchase_prob')
+		log_denominator = np.log(sum([np.exp(x) for x in all_product_scores]))
+		log_prob = current_product_score - log_denominator
+		feature_values.append(log_prob)
+
+		return feature_names, feature_values
+
+	def get_fidelity_features(self, index, user_idx, product_idx, query_idx, review_idx, relation_entity_list):
+		# index: the id of the current explanation
+		# relation_entity_list: (relation_name, list(eneity_id), list(entity_att_score))
+		name_prefix = 'exp_' + str(index) + '_'
+		feature_names = []
+		feature_values = []
+		
+		def add_mean_min_max_values(feature_name, value_list):
+			feature_names.append(feature_name + '_mean')
+			feature_values.append(np.mean(value_list))
+			feature_names.append(feature_name + '_min')
+			feature_values.append(np.min(value_list))
+			feature_names.append(feature_name + '_max')
+			feature_values.append(np.max(value_list))
+		
+		def compute_relation_existance_rate(relation_name, user_idx, product_idx, entity_idx):
+			check_item = 0
+			check_user = 0
+			if relation_name == 'write':
+				check_user = 1 if user_idx in self.word_to_users[entity_idx] else 0
+				check_item = 1 if product_idx in self.word_to_item[entity_idx] else 0
+			else:
+				# check item side
+				if entity_idx in self.knowledge[relation_name]['data'][product_idx]:
+					check_item = 1
+				# check user side	
+				if entity_idx in self.user_history_idxs[relation_name][user_idx]:
+					check_user = 1
+			return (check_item + check_user)/2
+
+		if relation_entity_list == None: # explanation not exist
+			default_value = -1.0
+			add_mean_min_max_values(name_prefix + 'exist_confidence', default_value)
+			add_mean_min_max_values(name_prefix + 'existance_rate', default_value)
+		else:
+			# model confidence on relation existance 
+			add_mean_min_max_values(name_prefix + 'exist_confidence', relation_entity_list[2])
+			
+			# relation existance
+			existance_rates = []
+			for i in range(len(relation_entity_list[1])):
+				entity_idx = relation_entity_list[1][i]
+				existance_rates.append(
+					compute_relation_existance_rate(relation_name, user_idx, product_idx, entity_idx)
+				)
+			
+			add_mean_min_max_values(name_prefix + 'exist_confidence', existance_rates)
+
+		return feature_names, feature_values
+
+	def get_novelty_features(self, index, user_idx, product_idx, query_idx, review_idx, relation_entity_list):
+		# index: the id of the current explanation
+		# relation_entity_list: (relation_name, list(eneity_id), list(entity_att_score))
+		name_prefix = 'exp_' + str(index) + '_'
+		feature_names = []
+		feature_values = []
+		default_value = 0.0
+		
+		def add_mean_min_max_values(feature_name, value_list):
+			feature_names.append(feature_name + '_mean')
+			feature_values.append(np.mean(value_list))
+			feature_names.append(feature_name + '_min')
+			feature_values.append(np.min(value_list))
+			feature_names.append(feature_name + '_max')
+			feature_values.append(np.max(value_list))
+
+		if relation_entity_list != None and relation_entity_list[0] != 'popularity':
+			key, entity_idxs, entity_att_list = relation_entity_list
+
+			# entity_significance -> inverse user frequency
+			iuf_list = []
+			for idx in entity_idxs:
+				log_iuf = np.log(self.entity_user_distributions[key]['sum']/(self.entity_user_distributions[key]['distribute'][idx] + 1))
+				iuf_list.append(log_iuf)
+			add_mean_min_max_values(name_prefix + 'entity_iuf', iuf_list)
+
+			# entity_significance -> inverse item frequency
+			iif_list = []
+			if key == 'product': # the relation is user purchase, then there is inverse item frequency is a constant
+				iif_list = [np.log(self.product_size/2) for idx in entity_idxs]
+			elif key == 'write':
+				iif_list = [np.log(self.entity_item_distributions[key]['sum']/(self.entity_item_distributions[key]['distribute'][idx] + 1)) for idx in entity_idxs]
+			else:
+				for idx in entity_idxs:
+					log_iif = np.log(self.product_size/(self.knowledge[key]['distribute'][idx] + 1))
+					iif_list.append(log_iif)
+			add_mean_min_max_values(name_prefix + 'entity_iif', iif_list)
+			
+			# user_entity_mutual_info -> mutual_info(user, entity)
+			def log_mutual_info(xy_count, x_count, y_count): # denominator doesn't matter after feature normalization
+				return np.log(xy_count+1) -  np.log(x_count+1) - np.log(y_count +1)
+			ue_mutual_list = []
+			if key == 'write':
+				for idx in entity_idxs:
+					xy_count = self.word_co_map['user'][user_idx][idx] # count entity in user_history
+					x_count = self.vocab_distribute[idx]
+					y_count = sum(self.word_co_map['user'][user_idx])
+					ue_mutual_list.append(log_mutual_info(xy_count, x_count, y_count))
+			else:
+				for idx in entity_idxs:
+					xy_count = 0 # count entity in user_history
+					for x in self.user_history_idxs[key][user_idx]:
+						if x == idx:
+							xy_count += 1
+					x_count = self.entity_user_distributions[key]['distribute'][idx] # entity count
+					y_count = len(self.user_history_idxs[key][user_idx])
+					ue_mutual_list.append(log_mutual_info(xy_count, x_count, y_count))
+			add_mean_min_max_values(name_prefix + 'user_entity_mutual_info', ue_mutual_list)
+
+			# item_entity_mutual_info -> mutual_info(item, entity)
+			ie_mutual_list = []
+			if key == 'write':
+				for idx in entity_idxs:
+					xy_count = self.word_co_map['item'][product_idx][idx] # count entity in user_history
+					x_count = self.vocab_distribute[idx]
+					y_count = sum(self.word_co_map['item'][product_idx])
+					ue_mutual_list.append(log_mutual_info(xy_count, x_count, y_count))
+			else:
+				for idx in entity_idxs:
+					xy_count = self.item_entity_co_map[product_idx][key][idx] # count entity in user_history
+					x_count = self.entity_user_distributions[key]['distribute'][idx] # entity count
+					y_count = self.entity_user_distributions['product']['distribute'][product_idx]
+					ie_mutual_list.append(log_mutual_info(xy_count, x_count, y_count))
+			add_mean_min_max_values(name_prefix + 'item_entity_mutual_info', ie_mutual_list)
+
+			# relation_significance -> entity entropy with the relationship
+			feature_names.append('relation_info_entropy')
+			feature_values.append(self.entity_user_distributions[key]['entropy'])
+
+		else: # relation not exist
+			# entity_significance -> Inverse user frequency
+			add_mean_min_max_values(name_prefix + 'entity_iuf', default_value)
+			# entity_significance -> Inverse item frequency
+			add_mean_min_max_values(name_prefix + 'entity_iif', default_value)
+			# user_entity_mutual_info -> mutual_info(user, entity)
+			add_mean_min_max_values(name_prefix + 'user_entity_mutual_info', default_value)
+			# item_entity_mutual_info -> mutual_info(item, entity)
+			add_mean_min_max_values(name_prefix + 'item_entity_mutual_info', default_value)
+			# relation_significance -> entity entropy with the relationship
+			feature_names.append('relation_info_entropy')
+			feature_values.append(default_value)
+		print('novelty features')
+		print(feature_names)
+		print(feature_values)
+		return feature_names, feature_values
 
 

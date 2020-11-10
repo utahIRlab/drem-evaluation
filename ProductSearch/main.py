@@ -498,6 +498,126 @@ def find_explanation_path_for_samples():
 		print("Generated " + str(count) + " explanations")
 
 
+def extract_explanation_features():
+	print("Reading data in %s" % FLAGS.data_dir)
+
+	data_set = data_util.Tensorflow_data(FLAGS.data_dir, FLAGS.input_train_dir, 'test')
+	data_set.read_train_product_ids(FLAGS.input_train_dir)
+	config = tf.ConfigProto()
+	config.gpu_options.allow_growth = True
+
+	# Read sample user-query-item triples for explanations
+	print('Read user-query-item triples for explanations')
+	sampled_uqi_triples = None
+	if os.path.isfile(FLAGS.sample_file_for_explanation):
+		with open(FLAGS.sample_file_for_explanation) as fin:
+			sampled_uqi_triples = set()
+			for line in fin:
+				arr = line.split()
+				product_id = data_set.get_idx(arr[1], 'product') 
+				arr2 = arr[0].split('_')
+				user_id = data_set.get_idx(arr2[0], 'user') 
+				query_id = int(arr2[1])
+				sampled_uqi_triples.add((user_id, query_id, product_id))
+			if len(sampled_uqi_triples) < 1:
+				sampled_uqi_triples = None
+
+	with tf.Session(config=config) as sess, open(FLAGS.explanation_output_dir + 'explanation-output.csv', mode='w') as write_csv_file:
+		# Create model.
+		print("Read model")
+		model = create_model(sess, True, data_set, data_set.train_review_size)
+		words_to_train = float(FLAGS.max_train_epoch * data_set.word_count) + 1
+		test_seq = [i for i in xrange(data_set.review_size)]
+		model.setup_data_set(data_set, words_to_train)
+		model.intialize_epoch(test_seq)
+		model.prepare_test_epoch(sampled_uqi_triples=sampled_uqi_triples)
+		has_next = True
+
+		print('Extract explanation features\n')
+		csv_writer = csv.writer(write_csv_file, delimiter='\t')
+		csv_header = None
+		data_set.read_org_product_reviews(FLAGS.data_dir)
+		data_set.prepare_feature_stats(FLAGS.data_dir, sampled_uqi_triples)
+		print('Feature stats initialization finished.\n')
+		#csv_writer.writerow(['sample_id', 'explanation', 'attention_weight', 'previous_reviews'])
+		count = 0
+
+		while has_next:
+			# get inputs
+			input_feed, has_next, uqr_pairs = model.get_test_batch()
+			# Compute scores
+			up_entity_list, _ = model.step(sess, input_feed, True, 'explain_user_product')
+			all_product_scores, _ = model.step(sess, input_feed, True)
+
+			# Create explanations
+			for i in range(len(uqr_pairs)):
+				user_idx, product_idx, query_idx, review_idx = uqr_pairs[i]
+				sample_id = '-'.join([str(user_idx), str(product_idx), str(query_idx), str(review_idx)])
+				cur_product_score = all_product_scores[i][product_idx]
+
+				#merge all entity scores into one list to get max 3 values
+				overall_tuple_list = []
+				for relation_name, entity_name, batch_entity_scores in up_entity_list:
+					entity_scores = batch_entity_scores[i]
+					indexed_scores = list(enumerate(entity_scores))
+					curr_tuple_list = [(relation_name, entity_name, index, value) for index, value in indexed_scores]
+					overall_tuple_list.extend(curr_tuple_list)
+
+				#get top 3 relation and their values and generate explanation for them
+				top_valued_tuples = sorted(overall_tuple_list, key=operator.itemgetter(3), reverse=True)#[:FLAGS.explanation_candidate_num]
+				explanation = ''
+				used_relation_dict = {}
+				relation_list = []
+				relation_entity_list_map = {}
+				for index, top_tuple in enumerate(top_valued_tuples):
+					relation_name, entity_name, max_index, path_score = top_tuple
+					if relation_name not in used_relation_dict:
+						if len(relation_list) < FLAGS.explanation_candidate_num:
+							used_relation_dict[relation_name] = []
+							relation_entity_list_map[relation_name] = [relation_name, [], []]
+							relation_list.append(relation_name)
+						else:
+							continue
+					if len(used_relation_dict[relation_name]) < 3:
+						entity = "'<em>%s</em>'" % data_set.entity_vocab[entity_name][max_index]
+						used_relation_dict[relation_name].append(word)
+						relation_entity_list_map[relation_name][1].append(max_index)
+						relation_entity_list_map[relation_name][2].append(path_score)
+				
+				# COMPUTE EXPLANATION FEATURES
+				header = ['sample_id']
+				row = [sample_id]
+				def add_features(feature_names, feature_values):
+					header.extend(feature_names)
+					row.extend(feature_values)
+					return
+				# Retrieval Performance features
+				perf_feature_names, perf_feature_values = data_set.get_performance_features(cur_product_score, all_product_scores[i])
+				add_features(perf_feature_names, perf_feature_values)
+
+				exp_count = 0
+				for relation_name in relation_list:
+					relation_entity_list = relation_entity_list_map[relation_name]
+					# add fidelity features
+					fid_feature_names, fid_feature_values = data_set.get_fidelity_features(exp_count, user_idx, product_idx, query_idx, review_idx, relation_entity_list)
+					add_features(fid_feature_names, fid_feature_values)
+					# add novelty features
+					nov_feature_names, nov_feature_values = data_set.get_novelty_features(exp_count, user_idx, product_idx, query_idx, review_idx, relation_entity_list)
+					add_features(nov_feature_names, nov_feature_values)
+
+					exp_count += 1
+					if exp_count == FLAGS.explanation_candidate_num:
+						break
+
+				if csv_header == None:
+					csv_header = header
+					csv_writer.writerow(csv_header)
+				csv_writer.writerow(row)
+				count+=1
+
+		print("Generated " + str(count) + " explanations")
+
+
 def main(_):
 	if FLAGS.input_train_dir == "":
 		FLAGS.input_train_dir = FLAGS.data_dir
@@ -512,6 +632,8 @@ def main(_):
 			interactive_explain_mode()
 		elif FLAGS.test_mode == 'explanation_path':
 			find_explanation_path_for_samples()
+		elif FLAGS.test_mode == 'explanation_features':
+			extract_explanation_features()
 		else:
 			get_product_scores()
 	else:
