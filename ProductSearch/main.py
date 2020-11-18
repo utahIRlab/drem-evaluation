@@ -522,7 +522,7 @@ def extract_explanation_features():
 			if len(sampled_uqi_triples) < 1:
 				sampled_uqi_triples = None
 
-	with tf.Session(config=config) as sess, open(FLAGS.explanation_output_dir + 'explanation-output.csv', mode='w') as write_csv_file:
+	with tf.Session(config=config) as sess, open(FLAGS.explanation_output_dir + 'explanation-features.csv', mode='w') as write_csv_file:
 		# Create model.
 		print("Read model")
 		model = create_model(sess, True, data_set, data_set.train_review_size)
@@ -580,7 +580,7 @@ def extract_explanation_features():
 							continue
 					if len(used_relation_dict[relation_name]) < 3:
 						entity = "'<em>%s</em>'" % data_set.entity_vocab[entity_name][max_index]
-						used_relation_dict[relation_name].append(word)
+						used_relation_dict[relation_name].append(entity)
 						relation_entity_list_map[relation_name][1].append(max_index)
 						relation_entity_list_map[relation_name][2].append(path_score)
 				

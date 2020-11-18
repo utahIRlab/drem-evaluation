@@ -170,6 +170,9 @@ class Tensorflow_data:
 					self.knowledge[name]['data'].append(knowledge)
 			self.knowledge[name]['distribute'] = self.knowledge[name]['distribute'].tolist()
 
+		self.max_history_length = 0
+		self.history_length = []
+
 		for product_idxs in self.user_history_idxs['product']:
 			brand_idxs = []
 			category_idxs = []
@@ -320,7 +323,7 @@ class Tensorflow_data:
 
 	def prepare_feature_stats(self, data_path, sampled_uqi_triples):
 		self.entity_user_distributions = {key: {} for key in self.user_history_idxs}
-		self.entity_user_distributions['write'] = {
+		self.entity_user_distributions['word'] = {
 			'distribute': np.zeros(self.vocab_size)
 		}
 		# For fidelity features
@@ -338,19 +341,19 @@ class Tensorflow_data:
 		
 		# For novelty features
 		self.entity_item_distributions = {
-			'write': {
+			'word': {
 				'distribute':[len(x) for x in self.word_to_items]
 			}
 		}
-		self.entity_item_distributions['write']['sum'] = np.sum(self.entity_item_distributions['write']['distribute'])
+		self.entity_item_distributions['word']['sum'] = np.sum(self.entity_item_distributions['word']['distribute'])
 		
-		self.entity_user_distributions['write']['distribute'] = [len(x) for x in self.word_to_users]
-		self.entity_user_distributions['write']['sum'] = np.sum(self.entity_user_distributions['write']['distribute'])
+		self.entity_user_distributions['word']['distribute'] = [len(x) for x in self.word_to_users]
+		self.entity_user_distributions['word']['sum'] = np.sum(self.entity_user_distributions['word']['distribute'])
 		info_entropy = 0.0
-		for x in self.entity_user_distributions['write']['distribute']:
-			p_x = (x+1)/self.entity_user_distributions['write']['sum']
+		for x in self.entity_user_distributions['word']['distribute']:
+			p_x = (x+1)/self.entity_user_distributions['word']['sum']
 			info_entropy = info_entropy - p_x * np.log(p_x)
-		self.entity_user_distributions['write']['entropy'] = info_entropy
+		self.entity_user_distributions['word']['entropy'] = info_entropy
 
 		for key in self.user_history_idxs:
 			if key == 'review':
@@ -385,10 +388,10 @@ class Tensorflow_data:
 		with gzip.open(data_path + "review_u_p.txt.gz", 'rt') as fin:
 			for line in fin:
 				user_idx, product_idx = int(line.rstrip().split(" ")[0]), int(line.rstrip().split(" ")[1])
-				if user_idx in self.word_co_map['user'][user_idx]:
+				if user_idx in self.word_co_map['user']:
 					for w in self.org_review_text[index]:
 						self.word_co_map['user'][user_idx][w] += 1
-				if product_idx in self.word_co_map['item'][product_idx]:
+				if product_idx in self.word_co_map['item']:
 					for w in self.org_review_text[index]:
 						self.word_co_map['item'][product_idx][w] += 1
 
@@ -445,9 +448,9 @@ class Tensorflow_data:
 		def compute_relation_existance_rate(relation_name, user_idx, product_idx, entity_idx):
 			check_item = 0
 			check_user = 0
-			if relation_name == 'write':
+			if relation_name == 'word':
 				check_user = 1 if user_idx in self.word_to_users[entity_idx] else 0
-				check_item = 1 if product_idx in self.word_to_item[entity_idx] else 0
+				check_item = 1 if product_idx in self.word_to_items[entity_idx] else 0
 			else:
 				# check item side
 				if entity_idx in self.knowledge[relation_name]['data'][product_idx]:
@@ -458,9 +461,8 @@ class Tensorflow_data:
 			return (check_item + check_user)/2
 
 		if relation_entity_list == None: # explanation not exist
-			default_value = -1.0
-			add_mean_min_max_values(name_prefix + 'exist_confidence', default_value)
-			add_mean_min_max_values(name_prefix + 'existance_rate', default_value)
+			add_mean_min_max_values(name_prefix + 'exist_confidence', -100)
+			add_mean_min_max_values(name_prefix + 'existance_rate', -100)
 		else:
 			# model confidence on relation existance 
 			add_mean_min_max_values(name_prefix + 'exist_confidence', relation_entity_list[2])
@@ -470,7 +472,7 @@ class Tensorflow_data:
 			for i in range(len(relation_entity_list[1])):
 				entity_idx = relation_entity_list[1][i]
 				existance_rates.append(
-					compute_relation_existance_rate(relation_name, user_idx, product_idx, entity_idx)
+					compute_relation_existance_rate(relation_entity_list[0], user_idx, product_idx, entity_idx)
 				)
 			
 			add_mean_min_max_values(name_prefix + 'exist_confidence', existance_rates)
@@ -483,7 +485,6 @@ class Tensorflow_data:
 		name_prefix = 'exp_' + str(index) + '_'
 		feature_names = []
 		feature_values = []
-		default_value = 0.0
 		
 		def add_mean_min_max_values(feature_name, value_list):
 			feature_names.append(feature_name + '_mean')
@@ -507,7 +508,7 @@ class Tensorflow_data:
 			iif_list = []
 			if key == 'product': # the relation is user purchase, then there is inverse item frequency is a constant
 				iif_list = [np.log(self.product_size/2) for idx in entity_idxs]
-			elif key == 'write':
+			elif key == 'word':
 				iif_list = [np.log(self.entity_item_distributions[key]['sum']/(self.entity_item_distributions[key]['distribute'][idx] + 1)) for idx in entity_idxs]
 			else:
 				for idx in entity_idxs:
@@ -519,7 +520,7 @@ class Tensorflow_data:
 			def log_mutual_info(xy_count, x_count, y_count): # denominator doesn't matter after feature normalization
 				return np.log(xy_count+1) -  np.log(x_count+1) - np.log(y_count +1)
 			ue_mutual_list = []
-			if key == 'write':
+			if key == 'word':
 				for idx in entity_idxs:
 					xy_count = self.word_co_map['user'][user_idx][idx] # count entity in user_history
 					x_count = self.vocab_distribute[idx]
@@ -538,12 +539,12 @@ class Tensorflow_data:
 
 			# item_entity_mutual_info -> mutual_info(item, entity)
 			ie_mutual_list = []
-			if key == 'write':
+			if key == 'word':
 				for idx in entity_idxs:
 					xy_count = self.word_co_map['item'][product_idx][idx] # count entity in user_history
 					x_count = self.vocab_distribute[idx]
 					y_count = sum(self.word_co_map['item'][product_idx])
-					ue_mutual_list.append(log_mutual_info(xy_count, x_count, y_count))
+					ie_mutual_list.append(log_mutual_info(xy_count, x_count, y_count))
 			else:
 				for idx in entity_idxs:
 					xy_count = self.item_entity_co_map[product_idx][key][idx] # count entity in user_history
@@ -558,16 +559,16 @@ class Tensorflow_data:
 
 		else: # relation not exist
 			# entity_significance -> Inverse user frequency
-			add_mean_min_max_values(name_prefix + 'entity_iuf', default_value)
+			add_mean_min_max_values(name_prefix + 'entity_iuf', 0)
 			# entity_significance -> Inverse item frequency
-			add_mean_min_max_values(name_prefix + 'entity_iif', default_value)
+			add_mean_min_max_values(name_prefix + 'entity_iif', 0)
 			# user_entity_mutual_info -> mutual_info(user, entity)
-			add_mean_min_max_values(name_prefix + 'user_entity_mutual_info', default_value)
+			add_mean_min_max_values(name_prefix + 'user_entity_mutual_info', -100)
 			# item_entity_mutual_info -> mutual_info(item, entity)
-			add_mean_min_max_values(name_prefix + 'item_entity_mutual_info', default_value)
+			add_mean_min_max_values(name_prefix + 'item_entity_mutual_info', -100)
 			# relation_significance -> entity entropy with the relationship
 			feature_names.append('relation_info_entropy')
-			feature_values.append(default_value)
+			feature_values.append(-100)
 		print('novelty features')
 		print(feature_names)
 		print(feature_values)
