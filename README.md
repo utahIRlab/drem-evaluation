@@ -141,3 +141,30 @@ python utils/web_scapper.py "your input file name"
 The generated mturk-batch-input.csv file is to be uploaded to Amazon MTurk as a batch input file. The setup for MTurk survey is present in [this documentation][mturk-setup-doc].
 
 [mturk-setup-doc]: Setting%20up%20Mturk%20survey.pdf
+
+
+## Citation
+
+If you use this repository in your research, please cite with the following BibTex entry.
+
+```
+@article{ai2019explainable,
+  title={Explainable product search with a dynamic relation embedding model},
+  author={Ai, Qingyao and Zhang, Yongfeng and Bi, Keping and Croft, W Bruce},
+  journal={ACM Transactions on Information Systems (TOIS)},
+  volume={38},
+  number={1},
+  pages={1--29},
+  year={2019},
+  publisher={ACM New York, NY, USA}
+}
+
+@misc{ai2021modelagnostic,
+      title={Model-agnostic vs. Model-intrinsic Interpretability for Explainable Product Search}, 
+      author={Qingyao Ai and Lakshmi Narayanan Ramasamy},
+      year={2021},
+      eprint={2108.05317},
+      archivePrefix={arXiv},
+      primaryClass={cs.IR}
+}
+```
